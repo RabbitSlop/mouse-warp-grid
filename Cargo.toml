@@ -1,0 +1,29 @@
+[package]
+name = "warp-grid"
+version = "0.1.0"
+edition = "2021"
+description = "Keyboard-driven mouse warp tool for Wayland/Niri"
+
+[[bin]]
+name = "warp-grid"
+path = "src/main.rs"
+
+[dependencies]
+# Wayland client toolkit – layer shell, keyboard, shm drawing
+smithay-client-toolkit = { version = "0.19", features = ["calloop"] }
+
+# Raw Wayland protocol bindings (wlr virtual pointer lives here)
+wayland-client    = "0.31"
+wayland-protocols-wlr = "0.3"
+
+# Pure-Rust 2D rasteriser – no system graphics deps required
+tiny-skia = "0.11"
+
+# Event loop
+calloop = "0.13"
+calloop-wayland-source = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
