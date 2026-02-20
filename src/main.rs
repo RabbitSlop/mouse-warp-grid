@@ -80,9 +80,9 @@ fn cell_label(idx: usize) -> &'static str {
 /// ARGB8888 colour constants
 const OVERLAY_BG:   u32 = 0x55_00_00_00; // semi-transparent black
 const GRID_LINE:    u32 = 0xAA_FF_FF_FF; // white grid lines
-const CELL_HOVER:   u32 = 0x55_4C_AF_FF; // blue tint on active zone
+const CELL_HOVER:   u32 = 0x22_FF_80_00; // subtle blue tint on active zone
+const THIRD_STAGE:  u32 = 0x22_00_00_FF;
 const TEXT_COLOUR:  u32 = 0xFF_FF_FF_FF; // white labels
-const LEVEL2_TINT:  u32 = 0x33_FF_80_00; // orange tint for level-2 zone
 
 fn argb_to_skia(argb: u32) -> tiny_skia::Color {
     let a = ((argb >> 24) & 0xFF) as f32 / 255.0;
@@ -100,6 +100,7 @@ enum WarpLevel {
     Coarse,
     /// Coarse zone chosen; waiting for fine (level-2) key press
     Fine { zone_row: u32, zone_col: u32 },
+    Finer { zone_row: u32, zone_col: u32, sub_row: u32, sub_col: u32 },
 }
 
 struct App {
@@ -216,14 +217,13 @@ impl App {
     }
 
     // Draw the grid overlay into an shm buffer
-    fn draw(&mut self, qh: &QueueHandle<Self>) {
+    fn draw(&mut self, _qh: &QueueHandle<Self>) {
         let w = self.width;
         let h = self.height;
         if w == 0 || h == 0 {
             return;
         }
         let stride   = w * 4;
-        let buf_size = (stride * h) as usize;
 
         let pool = match self.pool.as_mut() {
             Some(p) => p,
@@ -244,84 +244,154 @@ impl App {
         let cell_w = w as f32 / COLS as f32;
         let cell_h = h as f32 / ROWS as f32;
 
-        // 2. Highlight the active zone (level 2 only)
-        if let WarpLevel::Fine { zone_row, zone_col } = self.level {
-            let mut paint = tiny_skia::Paint::default();
-            paint.set_color(argb_to_skia(LEVEL2_TINT));
+        // 2. Highlight the active zone (levels 2 and 3)
+        if let WarpLevel::Coarse = self.level {
+            // nothing extra
+        } else {
+            let (zone_row, zone_col) = match self.level {
+                WarpLevel::Fine { zone_row, zone_col } => (zone_row, zone_col),
+                WarpLevel::Finer { zone_row, zone_col, .. } => (zone_row, zone_col),
+                WarpLevel::Coarse => unreachable!(),
+            };
+
             let rx = zone_col as f32 * cell_w;
             let ry = zone_row as f32 * cell_h;
-            pixmap.fill_rect(
-                tiny_skia::Rect::from_xywh(rx, ry, cell_w, cell_h).unwrap(),
-                &paint,
-                tiny_skia::Transform::identity(),
-                None,
-            );
 
-            // subdivide inside zone
-            let sub_w = cell_w / COLS as f32;
-            let sub_h = cell_h / ROWS as f32;
-            let mut stroke_paint = tiny_skia::Paint::default();
-            stroke_paint.set_color(argb_to_skia(GRID_LINE));
-            let mut stroke = tiny_skia::Stroke::default();
-            stroke.width = 1.0;
+            // Second level grid and labels: only when we're exactly in Fine level.
+            if let WarpLevel::Fine { .. } = self.level {
+                // subtle tint over the active coarse cell
+                if let Some(rect) = tiny_skia::Rect::from_xywh(rx, ry, cell_w, cell_h) {
+                    let mut paint = tiny_skia::Paint::default();
+                    paint.set_color(argb_to_skia(CELL_HOVER));
+                    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                }
 
-            for col in 0..=COLS {
-                let x = rx + col as f32 * sub_w;
-                let mut pb = tiny_skia::PathBuilder::new();
-                pb.move_to(x, ry);
-                pb.line_to(x, ry + cell_h);
-                if let Some(p) = pb.finish() {
-                    pixmap.stroke_path(&p, &stroke_paint, &stroke,
-                        tiny_skia::Transform::identity(), None);
+                let sub_w = cell_w / COLS as f32;
+                let sub_h = cell_h / ROWS as f32;
+                let mut stroke_paint = tiny_skia::Paint::default();
+                stroke_paint.set_color(argb_to_skia(GRID_LINE));
+                let mut stroke = tiny_skia::Stroke::default();
+                stroke.width = 1.0;
+
+                for col in 0..=COLS {
+                    let x = rx + col as f32 * sub_w;
+                    let mut pb = tiny_skia::PathBuilder::new();
+                    pb.move_to(x, ry);
+                    pb.line_to(x, ry + cell_h);
+                    if let Some(p) = pb.finish() {
+                        pixmap.stroke_path(&p, &stroke_paint, &stroke,
+                            tiny_skia::Transform::identity(), None);
+                    }
+                }
+                for row in 0..=ROWS {
+                    let y = ry + row as f32 * sub_h;
+                    let mut pb = tiny_skia::PathBuilder::new();
+                    pb.move_to(rx, y);
+                    pb.line_to(rx + cell_w, y);
+                    if let Some(p) = pb.finish() {
+                        pixmap.stroke_path(&p, &stroke_paint, &stroke,
+                            tiny_skia::Transform::identity(), None);
+                    }
+                }
+
+                // key labels in sub-cells
+                let mut idx = 0usize;
+                for r in 0..ROWS {
+                    for c in 0..COLS {
+                        let lx = rx + c as f32 * sub_w + sub_w * 0.5;
+                        let ly = ry + r as f32 * sub_h + sub_h * 0.5;
+                        draw_label(&mut pixmap, cell_label(idx), lx, ly, 18.0);
+                        idx += 1;
+                    }
                 }
             }
-            for row in 0..=ROWS {
-                let y = ry + row as f32 * sub_h;
-                let mut pb = tiny_skia::PathBuilder::new();
-                pb.move_to(rx, y);
-                pb.line_to(rx + cell_w, y);
-                if let Some(p) = pb.finish() {
-                    pixmap.stroke_path(&p, &stroke_paint, &stroke,
-                        tiny_skia::Transform::identity(), None);
-                }
-            }
 
-            // key labels in sub-cells
-            let mut idx = 0usize;
-            for r in 0..ROWS {
-                for c in 0..COLS {
-                    let lx = rx + c as f32 * sub_w + sub_w * 0.5;
-                    let ly = ry + r as f32 * sub_h + sub_h * 0.5;
-                    draw_label(&mut pixmap, cell_label(idx), lx, ly, 18.0);
-                    idx += 1;
+            // 3rd level: if we're in the finest level, subdivide the chosen sub-cell again
+            if let WarpLevel::Finer { zone_row, zone_col, sub_row, sub_col } = self.level {
+                let rx = zone_col as f32 * cell_w;
+                let ry = zone_row as f32 * cell_h;
+
+                let sub_w = cell_w / COLS as f32;
+                let sub_h = cell_h / ROWS as f32;
+
+                let sub_rx = rx + sub_col as f32 * sub_w;
+                let sub_ry = ry + sub_row as f32 * sub_h;
+
+                // subtle tint over the active fine cell region
+                if let Some(rect) = tiny_skia::Rect::from_xywh(sub_rx, sub_ry, sub_w, sub_h) {
+                    let mut paint = tiny_skia::Paint::default();
+                    paint.set_color(argb_to_skia(THIRD_STAGE));
+                    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                }
+
+                let sub2_w = sub_w / COLS as f32;
+                let sub2_h = sub_h / ROWS as f32;
+
+                let mut stroke_paint = tiny_skia::Paint::default();
+                stroke_paint.set_color(argb_to_skia(GRID_LINE));
+                let mut stroke = tiny_skia::Stroke::default();
+                stroke.width = 1.0;
+
+                for col in 0..=COLS {
+                    let x = sub_rx + col as f32 * sub2_w;
+                    let mut pb = tiny_skia::PathBuilder::new();
+                    pb.move_to(x, sub_ry);
+                    pb.line_to(x, sub_ry + sub_h);
+                    if let Some(p) = pb.finish() {
+                        pixmap.stroke_path(&p, &stroke_paint, &stroke,
+                            tiny_skia::Transform::identity(), None);
+                    }
+                }
+                for row in 0..=ROWS {
+                    let y = sub_ry + row as f32 * sub2_h;
+                    let mut pb = tiny_skia::PathBuilder::new();
+                    pb.move_to(sub_rx, y);
+                    pb.line_to(sub_rx + sub_w, y);
+                    if let Some(p) = pb.finish() {
+                        pixmap.stroke_path(&p, &stroke_paint, &stroke,
+                            tiny_skia::Transform::identity(), None);
+                    }
+                }
+
+                // key labels in deepest sub-cells
+                let mut idx = 0usize;
+                for r in 0..ROWS {
+                    for c in 0..COLS {
+                        let lx = sub_rx + c as f32 * sub2_w + sub2_w * 0.5;
+                        let ly = sub_ry + r as f32 * sub2_h + sub2_h * 0.5;
+                        draw_label(&mut pixmap, cell_label(idx), lx, ly, 18.0);
+                        idx += 1;
+                    }
                 }
             }
         }
 
         // 3. Coarse grid lines (always)
-        let mut paint = tiny_skia::Paint::default();
-        paint.set_color(argb_to_skia(GRID_LINE));
-        let mut stroke = tiny_skia::Stroke::default();
-        stroke.width = 2.0;
+        if let WarpLevel::Coarse = self.level {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color(argb_to_skia(GRID_LINE));
+            let mut stroke = tiny_skia::Stroke::default();
+            stroke.width = 2.0;
 
-        for col in 0..=COLS {
-            let x = col as f32 * cell_w;
-            let mut pb = tiny_skia::PathBuilder::new();
-            pb.move_to(x, 0.0);
-            pb.line_to(x, h as f32);
-            if let Some(p) = pb.finish() {
-                pixmap.stroke_path(&p, &paint, &stroke,
-                    tiny_skia::Transform::identity(), None);
+            for col in 0..=COLS {
+                let x = col as f32 * cell_w;
+                let mut pb = tiny_skia::PathBuilder::new();
+                pb.move_to(x, 0.0);
+                pb.line_to(x, h as f32);
+                if let Some(p) = pb.finish() {
+                    pixmap.stroke_path(&p, &paint, &stroke,
+                        tiny_skia::Transform::identity(), None);
+                }
             }
-        }
-        for row in 0..=ROWS {
-            let y = row as f32 * cell_h;
-            let mut pb = tiny_skia::PathBuilder::new();
-            pb.move_to(0.0, y);
-            pb.line_to(w as f32, y);
-            if let Some(p) = pb.finish() {
-                pixmap.stroke_path(&p, &paint, &stroke,
-                    tiny_skia::Transform::identity(), None);
+            for row in 0..=ROWS {
+                let y = row as f32 * cell_h;
+                let mut pb = tiny_skia::PathBuilder::new();
+                pb.move_to(0.0, y);
+                pb.line_to(w as f32, y);
+                if let Some(p) = pb.finish() {
+                    pixmap.stroke_path(&p, &paint, &stroke,
+                        tiny_skia::Transform::identity(), None);
+                }
             }
         }
 
@@ -369,11 +439,30 @@ impl App {
                 false // stay open for fine selection
             }
             WarpLevel::Fine { zone_row, zone_col } => {
-                // Compute final pixel coordinate: centre of sub-cell
+                self.level = WarpLevel::Finer {
+                    zone_row,
+                    zone_col,
+                    sub_row: row,
+                    sub_col: col,
+                };
+                false // stay open for third-level selection
+            }
+            WarpLevel::Finer { zone_row, zone_col, sub_row, sub_col } => {
+                // Compute final pixel coordinate: centre of third-level sub-cell
                 let sub_w = cell_w / COLS as f64;
                 let sub_h = cell_h / ROWS as f64;
-                let x = zone_col as f64 * cell_w + col as f64 * sub_w + sub_w * 0.5;
-                let y = zone_row as f64 * cell_h + row as f64 * sub_h + sub_h * 0.5;
+                let sub2_w = sub_w / COLS as f64;
+                let sub2_h = sub_h / ROWS as f64;
+
+                let x = zone_col as f64 * cell_w
+                    + sub_col as f64 * sub_w
+                    + col as f64 * sub2_w
+                    + sub2_w * 0.5;
+                let y = zone_row as f64 * cell_h
+                    + sub_row as f64 * sub_h
+                    + row as f64 * sub2_h
+                    + sub2_h * 0.5;
+
                 self.action = Some(WarpAction { x, y, click: self.click });
                 true
             }
@@ -523,7 +612,7 @@ impl LayerShellHandler for App {
     }
 
     fn configure(&mut self, _conn: &Connection, qh: &QueueHandle<Self>,
-        layer: &LayerSurface, configure: LayerSurfaceConfigure, _serial: u32) {
+        _layer: &LayerSurface, configure: LayerSurfaceConfigure, _serial: u32) {
         let new_w = configure.new_size.0;
         let new_h = configure.new_size.1;
 
