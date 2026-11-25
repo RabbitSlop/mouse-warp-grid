@@ -230,6 +230,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mouse-warp-grid"
+version = "0.1.0"
+dependencies = [
+ "calloop",
+ "calloop-wayland-source",
+ "smithay-client-toolkit",
+ "tiny-skia",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -441,19 +454,6 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-
-[[package]]
-name = "warp-grid"
-version = "0.1.0"
-dependencies = [
- "calloop",
- "calloop-wayland-source",
- "smithay-client-toolkit",
- "tiny-skia",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
-]
 
 [[package]]
 name = "wayland-backend"

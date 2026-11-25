@@ -1,4 +1,4 @@
-# warp-grid
+# mouse-warp-grid
 
 Keyboard-driven mouse teleporter for Wayland (Niri, Sway, Hyprland, etc.).
 

@@ -1,4 +1,4 @@
-// warp-grid — keyboard-driven mouse teleporter for Wayland (Niri, KDE, Sway, …)
+// mouse-warp-grid — keyboard-driven mouse teleporter for Wayland (Niri, KDE, Sway, …)
 //
 // Cursor movement backends (picked automatically, nothing to configure):
 //   1. zwlr_virtual_pointer_v1  (wlroots-style compositors, Niri) – move + click

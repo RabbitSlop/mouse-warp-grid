@@ -1,11 +1,11 @@
 [package]
-name = "warp-grid"
+name = "mouse-warp-grid"
 version = "0.1.0"
 edition = "2021"
 description = "Keyboard-driven mouse warp tool for Wayland/Niri"
 
 [[bin]]
-name = "warp-grid"
+name = "mouse-warp-grid"
 path = "src/main.rs"
 
 [dependencies]
