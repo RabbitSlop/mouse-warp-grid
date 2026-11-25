@@ -31,7 +31,9 @@ press another key to land precisely within it. Two keystrokes → any pixel.
 - Rust toolchain (`rustup` — https://rustup.rs)
 - A Wayland compositor that supports:
   - `wlr-layer-shell-v1`   (Niri ✓, Sway ✓, Hyprland ✓)
-  - `zwlr-virtual-pointer-v1`  (Niri ✓, Sway ✓, Hyprland ✓)
+  - one of these to move the cursor (picked automatically, no setup):
+    - `zwlr-virtual-pointer-v1` (Niri ✓, Sway ✓, Hyprland ✓) – move and `--click`
+    - `wp-pointer-warp-v1` (KDE Plasma ≥ 6.4 ✓, GNOME ≥ 49 ✓, wlroots ≥ 0.19) – move only
 - `libxkbcommon-dev` (usually already installed)
 
 ```
@@ -96,9 +98,15 @@ For `--click` mode the cursor moves **and** left-clicks in one go.
 `wlr-layer-shell-v1`. All mainstream wlroots-based compositors do; KDE/GNOME
 may not.
 
-**"virtual pointer not available"** — your compositor doesn't support
-`zwlr-virtual-pointer-v1`. The overlay will still open and close but the
-cursor won't move. File a bug with your compositor.
+**"neither zwlr_virtual_pointer_manager_v1 nor wp_pointer_warp_v1"** — your
+compositor supports neither cursor-moving protocol. The overlay will still open
+and close but the cursor won't move.
+
+**KDE: "pointer was not over the overlay"** — `wp_pointer_warp_v1` only works
+while the pointer is over the overlay, i.e. on the monitor where it opened.
+
+**`--click` does nothing on KDE** — clicking needs `zwlr-virtual-pointer-v1`;
+on compositors that only have `wp-pointer-warp-v1` the cursor moves but no click is sent.
 
 **Overlay opens but no keys work** — make sure no other tool (e.g. your
 keyboard mouse mode) is grabbing the keyboard at the same time. Disable it

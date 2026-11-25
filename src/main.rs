@@ -1,4 +1,8 @@
-// warp-grid — keyboard-driven mouse teleporter for Wayland / Niri
+// warp-grid — keyboard-driven mouse teleporter for Wayland (Niri, KDE, Sway, …)
+//
+// Cursor movement backends (picked automatically, nothing to configure):
+//   1. zwlr_virtual_pointer_v1  (wlroots-style compositors, Niri) – move + click
+//   2. wp_pointer_warp_v1       (KWin, Mutter, wlroots ≥ 0.19)    – move only
 //
 // Usage
 // -----
@@ -26,13 +30,14 @@ use calloop_wayland_source::WaylandSource;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RepeatInfo},
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
         Capability, SeatHandler, SeatState,
     },
     shell::{
@@ -50,9 +55,11 @@ use smithay_client_toolkit::{
 
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer::ButtonState, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_pointer::ButtonState, wl_seat, wl_shm, wl_surface},
     Connection, QueueHandle,
 };
+
+use wayland_protocols::wp::pointer_warp::v1::client::wp_pointer_warp_v1::WpPointerWarpV1;
 
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
@@ -116,6 +123,11 @@ struct App {
     vp_manager: Option<ZwlrVirtualPointerManagerV1>,
     vp:         Option<ZwlrVirtualPointerV1>,
 
+    // --- pointer warp (fallback for KWin & co.: needs pointer focus on our surface) ---
+    warp_manager: Option<WpPointerWarpV1>,
+    pointer:      Option<wl_pointer::WlPointer>,
+    enter_serial: Option<u32>,
+
     // --- overlay surface ---
     layer:          Option<LayerSurface>,
     pool:           Option<SlotPool>,
@@ -153,6 +165,7 @@ impl App {
         layer_shell: LayerShell,
         shm: Shm,
         vp_manager: Option<ZwlrVirtualPointerManagerV1>,
+        warp_manager: Option<WpPointerWarpV1>,
         click: bool,
     ) -> Self {
         Self {
@@ -164,6 +177,9 @@ impl App {
             shm,
             vp_manager,
             vp: None,
+            warp_manager,
+            pointer: None,
+            enter_serial: None,
             layer: None,
             pool: None,
             buffer: None,
@@ -469,6 +485,32 @@ impl App {
         }
     }
 
+    /// Move the cursor with wp_pointer_warp_v1. Must run while the overlay surface
+    /// still exists and has pointer focus (the compositor checks the enter serial).
+    fn warp_with_pointer_warp(&self, action: WarpAction) {
+        let (Some(mgr), Some(pointer), Some(layer)) =
+            (self.warp_manager.as_ref(), self.pointer.as_ref(), self.layer.as_ref())
+        else {
+            eprintln!("warp-grid: pointer warp unavailable");
+            return;
+        };
+        let Some(serial) = self.enter_serial else {
+            eprintln!(
+                "warp-grid: the pointer was not over the overlay (it opened on another \
+                 monitor?), so the compositor won't allow warping"
+            );
+            return;
+        };
+        // Surface-local logical coordinates; the overlay fills its output at scale 1.
+        let x = action.x.clamp(0.0, (self.width.saturating_sub(1)) as f64);
+        let y = action.y.clamp(0.0, (self.height.saturating_sub(1)) as f64);
+        mgr.warp_pointer(layer.wl_surface(), pointer, x, y, serial);
+
+        if action.click {
+            eprintln!("warp-grid: --click needs zwlr_virtual_pointer, which this compositor lacks; moved only");
+        }
+    }
+
     /// Move (and optionally click) using zwlr_virtual_pointer
     fn execute_action(&self, action: WarpAction) {
         let vp = match self.vp.as_ref() {
@@ -652,6 +694,12 @@ impl SeatHandler for App {
                 .expect("get keyboard");
             self.keyboard = Some(keyboard);
         }
+        if capability == Capability::Pointer
+            && self.pointer.is_none()
+            && self.warp_manager.is_some()
+        {
+            self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+        }
     }
 
     fn remove_capability(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>,
@@ -660,6 +708,12 @@ impl SeatHandler for App {
             if let Some(kbd) = self.keyboard.take() {
                 kbd.release();
             }
+        }
+        if capability == Capability::Pointer {
+            if let Some(p) = self.pointer.take() {
+                p.release();
+            }
+            self.enter_serial = None;
         }
     }
 
@@ -727,6 +781,20 @@ impl KeyboardHandler for App {
         _keyboard: &wl_keyboard::WlKeyboard, _info: RepeatInfo) {}
 }
 
+impl PointerHandler for App {
+    fn pointer_frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer, events: &[PointerEvent]) {
+        // The overlay is our only surface, so any enter/leave is for it.
+        for event in events {
+            match event.kind {
+                PointerEventKind::Enter { serial } => self.enter_serial = Some(serial),
+                PointerEventKind::Leave { .. } => self.enter_serial = None,
+                _ => {}
+            }
+        }
+    }
+}
+
 impl ShmHandler for App {
     fn shm_state(&mut self) -> &mut Shm { &mut self.shm }
 }
@@ -737,6 +805,7 @@ delegate_output!(App);
 delegate_layer!(App);
 delegate_seat!(App);
 delegate_keyboard!(App);
+delegate_pointer!(App);
 delegate_shm!(App);
 delegate_registry!(App);
 
@@ -749,6 +818,11 @@ impl ProvidesRegistryState for App {
 impl wayland_client::Dispatch<ZwlrVirtualPointerManagerV1, ()> for App {
     fn event(_state: &mut Self, _proxy: &ZwlrVirtualPointerManagerV1,
         _event: <ZwlrVirtualPointerManagerV1 as wayland_client::Proxy>::Event,
+        _data: &(), _conn: &Connection, _qh: &QueueHandle<Self>) {}
+}
+impl wayland_client::Dispatch<WpPointerWarpV1, ()> for App {
+    fn event(_state: &mut Self, _proxy: &WpPointerWarpV1,
+        _event: <WpPointerWarpV1 as wayland_client::Proxy>::Event,
         _data: &(), _conn: &Connection, _qh: &QueueHandle<Self>) {}
 }
 impl wayland_client::Dispatch<ZwlrVirtualPointerV1, ()> for App {
@@ -778,13 +852,18 @@ fn main() {
     let vp_manager: Option<ZwlrVirtualPointerManagerV1> =
         globals.bind(&qh, 1..=2, ()).ok();
 
-    if vp_manager.is_none() {
-        eprintln!("warp-grid: zwlr_virtual_pointer_manager_v1 not available – cursor won't move");
+    // Fallback for compositors without virtual pointer (KWin, Mutter)
+    let warp_manager: Option<WpPointerWarpV1> =
+        globals.bind(&qh, 1..=1, ()).ok();
+
+    if vp_manager.is_none() && warp_manager.is_none() {
+        eprintln!("warp-grid: neither zwlr_virtual_pointer_manager_v1 nor wp_pointer_warp_v1 \
+                   is available – cursor won't move");
     }
 
     let mut app = App::new(
         registry_state, seat_state, output_state,
-        compositor, layer_shell, shm, vp_manager, click,
+        compositor, layer_shell, shm, vp_manager, warp_manager, click,
     );
 
     // Create the overlay surface
@@ -806,17 +885,31 @@ fn main() {
         }
     }
 
-    // Execute the warp action AFTER the overlay is gone (surface destroyed on drop)
-    drop(app.layer.take());
-
-    // Flush remaining Wayland requests (surface destruction + pointer motion)
-    // We need a final roundtrip via the raw connection. Re-use the loop for one tick.
-    if let Some(action) = app.action {
-        app.execute_action(action);
-
-        // One more dispatch so the motion_absolute request is flushed
+    let flush = |event_loop: &mut EventLoop<App>, app: &mut App| {
+        // Dispatching once makes the Wayland source flush our pending requests.
         event_loop
-            .dispatch(Some(std::time::Duration::from_millis(16)), &mut app)
+            .dispatch(Some(std::time::Duration::from_millis(30)), app)
             .ok();
+    };
+
+    match app.action {
+        // wlroots-style: destroy the overlay first, then inject motion/click.
+        Some(action) if app.vp_manager.is_some() => {
+            drop(app.layer.take());
+            app.execute_action(action);
+            flush(&mut event_loop, &mut app);
+        }
+        // KWin-style: the warp is only honoured while the overlay still has
+        // pointer focus, so warp first, flush, and only then close the overlay.
+        Some(action) => {
+            app.warp_with_pointer_warp(action);
+            flush(&mut event_loop, &mut app);
+            drop(app.layer.take());
+            flush(&mut event_loop, &mut app);
+        }
+        None => {
+            drop(app.layer.take());
+            flush(&mut event_loop, &mut app);
+        }
     }
 }

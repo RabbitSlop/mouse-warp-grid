@@ -15,6 +15,8 @@ smithay-client-toolkit = { version = "0.19", features = ["calloop"] }
 # Raw Wayland protocol bindings (wlr virtual pointer lives here)
 wayland-client    = "0.31"
 wayland-protocols-wlr = "0.3"
+# Standard/staging protocols (wp_pointer_warp_v1 – cursor warp on KWin, Mutter, …)
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # Pure-Rust 2D rasteriser – no system graphics deps required
 tiny-skia = "0.11"
